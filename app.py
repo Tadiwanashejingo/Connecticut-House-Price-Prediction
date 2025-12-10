@@ -1,4 +1,4 @@
-# app.py — Connecticut House Price Predictor AI | FINAL 100% WORKING
+# app.py — Connecticut House Price Predictor AI | FIXED
 import os
 import streamlit as st
 import pandas as pd
@@ -64,27 +64,26 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================
-# LOAD DATA — FIXED!
+# LOAD DATA
 # =========================
 @st.cache_data(show_spinner=False)
 def load_data():
     url = "https://github.com/kinosal/ct-data/raw/main/real_estate_clean.parquet"
     return pd.read_parquet(url)
 
-# ← THIS LINE WAS BROKEN BEFORE — NOW FIXED!
 with st.spinner("Loading 1.2M+ records..."):
     df = load_data()
 
 st.success(f"Loaded {len(df):,} records • {df['Town'].nunique()} towns • {df['year'].min()}–{df['year'].max()}")
 
 # =========================
-# TRAIN MODELS — ALL FIXED
+# TRAIN MODELS
 # =========================
 @st.cache_resource
-def train_all_models():
-    # Full features for Random Forest
-    X_full = pd.get_dummies(df[['Assessed Value', 'year', 'Town']], columns=['Town'], drop_first=True)
-    y = df['log_price'].values
+def train_all_models(dataframe):
+    # Full features (Assessed Value, year + Town dummies) for Random Forest
+    X_full = pd.get_dummies(dataframe[['Assessed Value', 'year', 'Town']], columns=['Town'], drop_first=True)
+    y = dataframe['log_price'].values
 
     X_train, X_test, y_train, y_test = train_test_split(X_full, y, test_size=0.2, random_state=42)
 
@@ -100,32 +99,61 @@ def train_all_models():
     rf_r2 = r2_score(y_test, pred_rf)
 
     # Polynomial (only Assessed Value + Year)
-    X_base = df[['Assessed Value', 'year']].values
-    X_train_b, X_test_b, _, _ = train_test_split(X_base, y, test_size=0.2, random_state=42)
+    X_base = dataframe[['Assessed Value', 'year']].values
+    X_train_b, X_test_b, y_train_b, y_test_b = train_test_split(X_base, y, test_size=0.2, random_state=42)
     scaler_base = MinMaxScaler()
     X_train_b_s = scaler_base.fit_transform(X_train_b)
     X_test_b_s = scaler_base.transform(X_test_b)
 
-    poly = PolynomialFeatures(degree=2, include_bias=False)
-    X_train_poly = poly.fit_transform(X_train_b_s)
-    model_poly = LinearRegression()
-    model_poly.fit(X_train_poly, y_train)
-    pred_poly = model_poly.predict(poly.transform(X_test_b_s))
-    poly_rmse = np.sqrt(mean_squared_error(y_test, pred_poly))
-    poly_r2 = r2_score(y_test, pred_poly)
+    poly_feat = PolynomialFeatures(degree=2, include_bias=False)
+    X_train_poly = poly_feat.fit_transform(X_train_b_s)
+    poly_model = LinearRegression()
+    poly_model.fit(X_train_poly, y_train_b)
+    pred_poly = poly_model.predict(poly_feat.transform(X_test_b_s))
+    poly_rmse = np.sqrt(mean_squared_error(y_test_b, pred_poly))
+    poly_r2 = r2_score(y_test_b, pred_poly)
 
     # Town clustering
-    town_avg = df.groupby('Town')['log_price'].mean().reset_index()
+    town_avg = dataframe.groupby('Town')['log_price'].mean().reset_index()
     town_scaled = MinMaxScaler().fit_transform(town_avg[['log_price']])
     kmeans = KMeans(n_clusters=5, random_state=42, n_init=10)
     town_avg['cluster'] = kmeans.fit_predict(town_scaled)
-    town_avg['segment'] = town_avg['cluster'].map({0:"Budget",1:"Affordable",2:"Mid-Range",3:"Premium",4:"Luxury"})
+    # map clusters to segments deterministically (sort by cluster mean to estimate order)
+    cluster_order = town_avg.groupby('cluster')['log_price'].mean().sort_values().index.tolist()
+    mapping = {cluster_order[i]: name for i, name in enumerate(["Budget", "Affordable", "Mid-Range", "Premium", "Luxury"])}
+    town_avg['segment'] = town_avg['cluster'].map(mapping)
 
-    return (scaler_full, X_full.columns.tolist(), rf, pred_rf, y_test,
-            rf_rmse, rf_r2, model_poly, poly, scaler_base, poly_rmse, poly_r2, town_avg)
+    return {
+        "scaler_full": scaler_full,
+        "feature_cols": X_full.columns.tolist(),
+        "rf": rf,
+        "rf_pred": pred_rf,
+        "y_test": y_test,
+        "rf_rmse": rf_rmse,
+        "rf_r2": rf_r2,
+        "poly_model": poly_model,
+        "poly_feat": poly_feat,
+        "scaler_base": scaler_base,
+        "poly_rmse": poly_rmse,
+        "poly_r2": poly_r2,
+        "town_avg": town_avg
+    }
 
-scaler, feature_cols, rf_model, rf_pred, y_test, rf_rmse, rf_r2, \
-poly_model, poly_feat, scaler_base, poly_rmse, poly_r2, town_clusters = train_all_models()
+models = train_all_models(df)
+
+scaler = models["scaler_full"]
+feature_cols = models["feature_cols"]
+rf_model = models["rf"]
+rf_pred = models["rf_pred"]
+y_test = models["y_test"]
+rf_rmse = models["rf_rmse"]
+rf_r2 = models["rf_r2"]
+poly_model = models["poly_model"]
+poly_feat = models["poly_feat"]
+scaler_base = models["scaler_base"]
+poly_rmse = models["poly_rmse"]
+poly_r2 = models["poly_r2"]
+town_clusters = models["town_avg"]
 
 # =========================
 # BLACK LEADERBOARD
@@ -141,7 +169,7 @@ fig = go.Figure(data=[go.Table(
         ["~0.312", f"{poly_rmse:.4f}", "~0.225", f"<b>{rf_rmse:.4f}</b>", "~0.259"],
         ["~0.872", f"{poly_r2:.4f}", "~0.932", f"<b>{rf_r2:.4f}</b>", "~0.926"]
     ], fill_color='#001d3d', font=dict(color='white', size=17), height=55)
-])
+)])
 fig.update_layout(height=380)
 st.plotly_chart(fig, use_container_width=True)
 st.markdown("</div>", unsafe_allow_html=True)
@@ -152,31 +180,46 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.markdown("<div class='card'>", unsafe_allow_html=True)
 st.markdown("<h2 style='text-align:center;'>Live Prediction</h2>", unsafe_allow_html=True)
 
-c1, c2 = st.columns([2,1])
+c1, c2 = st.columns([2, 1])
 with c1:
     assessed = st.number_input("Assessed Value ($)", 50000, 5000000, 350000, step=10000)
     year = st.slider("Year", 2001, 2025, 2024)
     town = st.selectbox("Town", sorted(df['Town'].unique()))
 
-    if st.button("Predict Price Now", type="primary", use_container_width=True):
-        vec = np.zeros(len(feature_cols))
-        vec[feature_cols.index('Assessed Value')] = assessed
-        vec[feature_cols.index('year')] = year
+    # NOTE: removed unsupported st.button args like `type` and `use_container_width`
+    if st.button("Predict Price Now"):
+        # Build feature vector in the same order as feature_cols
+        vec = np.zeros(len(feature_cols), dtype=float)
+        # set numeric features
+        if 'Assessed Value' in feature_cols:
+            vec[feature_cols.index('Assessed Value')] = assessed
+        if 'year' in feature_cols:
+            vec[feature_cols.index('year')] = year
+
+        # set town dummy if present
         town_col = f"Town_{town}"
         if town_col in feature_cols:
-            vec[feature_cols.index(town_col)] = 1
+            vec[feature_cols.index(town_col)] = 1.0
 
-        pred_log = rf_model.predict(scaler.transform(vec.reshape(1, -1)))[0]
+        # scale and predict
+        scaled_vec = scaler.transform(vec.reshape(1, -1))
+        pred_log = rf_model.predict(scaled_vec)[0]
         price = np.expm1(pred_log)
 
         st.markdown(f"<h1 style='text-align:center; color:#00ff88;'>${price:,.0f}</h1>", unsafe_allow_html=True)
-        segment = town_clusters[town_clusters['Town'] == town]['segment'].iloc[0]
-        st.markdown(f"<h3 style='text-align:center; color:#00eeff;'>→ {town} • {segment} Market</h3>", unsafe_allow_html=True)
+        # fallback if town not found in clusters
+        if town in town_clusters['Town'].values:
+            segment = town_clusters[town_clusters['Town'] == town]['segment'].iloc[0]
+            st.markdown(f"<h3 style='text-align:center; color:#00eeff;'>→ {town} • {segment} Market</h3>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<h3 style='text-align:center; color:#00eeff;'>→ {town} • Segment unknown</h3>", unsafe_allow_html=True)
         st.balloons()
 
 with c2:
     st.markdown("### Top 10 Luxury Towns")
-    st.dataframe(town_clusters.nlargest(10, 'log_price')[['Town', 'segment']], use_container_width=True, hide_index=True)
+    # show top towns by mean log_price
+    top10 = town_clusters.nlargest(10, 'log_price')[['Town', 'segment']]
+    st.dataframe(top10, use_container_width=True)
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -189,20 +232,23 @@ st.markdown("<h2 style='text-align:center; color:#00eeff;'>Model Insights</h2>",
 tab1, tab2, tab3, tab4 = st.tabs(["Random Forest", "Polynomial", "Features", "Towns"])
 
 with tab1:
-    fig = px.scatter(x=y_test[:3000], y=rf_pred[:3000], opacity=0.7)
-    fig.add_shape(type="line", x0=y_test.min(), y0=y_test.min(), x1=y_test.max(), y1=y_test.max(),
+    # show smaller sample so rendering stays responsive
+    n_plot = min(3000, len(y_test), len(rf_pred))
+    fig = px.scatter(x=y_test[:n_plot], y=rf_pred[:n_plot], opacity=0.7, labels={'x': 'Actual (log price)', 'y': 'Predicted (log price)'})
+    fig.add_shape(type="line", x0=min(y_test), y0=min(y_test), x1=max(y_test), y1=max(y_test),
                   line=dict(color="red", dash="dash"))
     fig.update_layout(title=f"Random Forest — R² = {rf_r2:.4f}", template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
-    x_range = np.linspace(df['Assessed Value'].min(), df['Assessed Value'].max(), 500).reshape(-1,1)
-    dummy_year = np.full((500,1), 2024)
-    input_poly = scaler_base.transform(np.hstack([x_range, dummy_year]))
+    x_range = np.linspace(df['Assessed Value'].min(), df['Assessed Value'].max(), 500).reshape(-1, 1)
+    dummy_year = np.full((500, 1), 2024)
+    input_base = np.hstack([x_range, dummy_year])
+    input_poly = scaler_base.transform(input_base)
     y_line = poly_model.predict(poly_feat.transform(input_poly))
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df['Assessed Value'], y=df['log_price'], mode='markers', marker=dict(opacity=0.1), name='Data'))
-    fig.add_trace(go.Scatter(x=x_range.flatten(), y=y_line, mode='lines', line=dict(color='#ff006e', width=6), name='Trend'))
+    fig.add_trace(go.Scatter(x=x_range.flatten(), y=y_line, mode='lines', line=dict(width=3), name='Trend'))
     fig.update_layout(title="Polynomial Trend", template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
@@ -213,4 +259,18 @@ with tab3:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab4:
-    fig = px.scatter(town_clusters, x='Town', y='log_price', color='segment', size='log_price
+    fig = px.scatter(town_clusters, x='Town', y='log_price', color='segment', size='log_price',
+                     color_discrete_sequence=['#ff3366', '#ff8533', '#ffff33', '#33ff57', '#00eeff'])
+    fig.update_layout(title="Town Market Segments", height=600, template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================
+# FOOTER
+# =========================
+st.markdown("""
+<div style="text-align:center; padding:60px; color:#66f0ff;">
+    Connecticut Real Estate AI • Random Forest Champion • 2025
+</div>
+""", unsafe_allow_html=True)
