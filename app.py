@@ -87,7 +87,8 @@ st.markdown("""
 # =========================
 @st.cache_data(show_spinner=False)
 def load_data():
-    df = "C:\Users\chabx\Downloads\PREDICTIVE ANALYSIS\REAL ESTATE PREDICTION PROJECT\Real_Estate_Sales_2001-2023_GL.csv"
+    df = r"C:\Users\chabx\Downloads\PREDICTIVE ANALYSIS\REAL ESTATE PREDICTION PROJECT\Real_Estate_Sales_2001-2023_GL.csv"
+
     df = df[df['Sale Amount'] >= 2000]
     df = df[df['Non Use Code'].isna()]
     df['Sales Ratio'] = pd.to_numeric(df['Sales Ratio'], errors='coerce')
