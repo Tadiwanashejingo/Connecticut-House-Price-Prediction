@@ -120,8 +120,7 @@ fig = go.Figure(data=[go.Table(
         ["Linear", "Polynomial", "<b>Random Forest</b>", "K-Means"],
         ["~0.312", "~0.298", f"<b>{rf_rmse:.4f}</b>", "~0.259"],
         ["~0.872", "~0.886", f"<b>{rf_r2:.4f}</b>", "~0.926"]
-    ], fill_color='#001d3d', font=dict(color='white'))
-])
+    ], fill_color='#001d3d', font=dict(color='white')))])
 fig.update_layout(height=350)
 st.plotly_chart(fig, use_container_width=True)
 st.markdown("</div>", unsafe_allow_html=True)
