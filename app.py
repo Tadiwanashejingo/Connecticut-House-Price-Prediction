@@ -1,5 +1,4 @@
-# app.py — Connecticut House Price ML Dashboard (Full feature: Drive load, OHE / TargetEnc, Linear, Poly, KMeans-cluster regressions,
-# model save/download, predictions download, live prediction UI, dark-styled UI)
+# app.py — Connecticut House Price ML Dashboard (Full feature) with robust price diagnostics
 import os
 import io
 import base64
@@ -35,9 +34,7 @@ DRIVE_DOWNLOAD_URL = lambda fid: f"https://drive.google.com/uc?export=download&i
 st.markdown(
     """
     <style>
-    /* page background */
     .stApp { background: linear-gradient(180deg,#041023 0%, #00101a 100%); color: #e6f7ff; }
-    /* header */
     .hero { background: linear-gradient(90deg,#07263b,#041c2b); padding: 28px; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); }
     .hero h1 { color: #7fe0f5; margin:0; }
     .card { background: rgba(255,255,255,0.03); padding: 12px; border-radius: 12px; border: 1px solid rgba(127,224,245,0.06); }
@@ -70,14 +67,9 @@ def ensure_cols(df):
     return df
 
 def smoothed_target_encoding(train_series, target_series, min_samples_leaf=20, smoothing=10):
-    """
-    compute smoothed target mean for categories in train_series.
-    return mapping dict and global_mean
-    """
     df = pd.DataFrame({'cat': train_series, 'y': target_series})
     averages = df.groupby('cat')['y'].agg(['mean','count'])
     global_mean = target_series.mean()
-    # smoothing: weight = count / (count + smoothing)
     averages['smooth'] = (averages['count'] * averages['mean'] + smoothing * global_mean) / (averages['count'] + smoothing)
     mapping = averages['smooth'].to_dict()
     return mapping, global_mean
@@ -94,7 +86,6 @@ def model_save_bytes(obj):
 def df_to_csv_bytes(df):
     return df.to_csv(index=False).encode('utf-8')
 
-# evaluation
 def eval_metrics(y_true, y_pred):
     mae = mean_absolute_error(y_true, y_pred)
     rmse = mean_squared_error(y_true, y_pred, squared=False)
@@ -118,7 +109,6 @@ use_target_enc = st.sidebar.checkbox("Use Target Encoding for Town (smoothed mea
 target_enc_min_samples = st.sidebar.number_input("Min samples for Town smoothing", value=20, step=5)
 target_enc_smoothing = st.sidebar.number_input("Town smoothing factor", value=10, step=1)
 
-# kmeans options
 k_clusters = st.sidebar.slider("K-Means town clusters (when running KMeans)", 2, 12, 5)
 random_state = int(st.sidebar.number_input("Random seed", value=42, step=1))
 
@@ -126,12 +116,14 @@ random_state = int(st.sidebar.number_input("Random seed", value=42, step=1))
 # Load Data
 # ---------------------------
 df = None
+load_error = None
 if use_drive and drive_id.strip():
     try:
         with st.spinner("Loading CSV from Google Drive..."):
             df = load_from_drive_url(DRIVE_DOWNLOAD_URL(drive_id.strip()))
             st.sidebar.success("Loaded from Drive")
     except Exception as e:
+        load_error = str(e)
         st.sidebar.error(f"Drive load failed: {e}")
         df = None
 
@@ -140,29 +132,83 @@ if df is None and uploaded is not None:
         df = load_from_filelike(uploaded)
         st.sidebar.success("Loaded uploaded CSV")
     except Exception as e:
+        load_error = str(e)
         st.sidebar.error(f"Upload failed: {e}")
 
 if df is None:
     st.sidebar.info("No dataset loaded. Provide Drive ID or upload CSV.")
     st.stop()
 
-# normalize columns if needed
+# Normalize columns
 df = ensure_cols(df)
 
 # ---------------------------
-# Header / Hero
+# DIAGNOSTIC + Robust price-column detection
+# This block ensures a usable 'Sale Amount' and 'log_price' column exists
 # ---------------------------
-st.markdown("<div class='hero'><h1>Connecticut House Price — ML Analysis</h1><div class='muted'>Linear • Polynomial (year) • KMeans + per-cluster regressions — full deployable dashboard</div></div>", unsafe_allow_html=True)
-st.write("")
-
-# ---------------------------
-# Basic EDA & cleaning
-# ---------------------------
-st.markdown("## Dataset & quick checks")
-st.write(f"Shape: **{df.shape}**")
-with st.expander("Preview data (first 10 rows)"):
+st.markdown("## Dataset diagnostics")
+st.write("Shape:", df.shape)
+st.write("Columns:", list(df.columns))
+with st.expander("Show first 10 rows"):
     st.dataframe(df.head(10), use_container_width=True)
 
+# If DataFrame empty, show helpful hints
+if df.shape[0] == 0:
+    st.error("DataFrame has 0 rows. Common causes:\n"
+             "- Wrong Drive ID or file not shared publicly\n"
+             "- The file uses a non-standard delimiter (e.g., ';')\n"
+             "- File has header rows to skip\n             )
+    st.markdown("### Try reloading with different CSV options")
+    alt_sep = st.selectbox("Try delimiter", options=[",", ";", "\t", "|"], index=0)
+    alt_header = st.number_input("Header row index (0-based) if first rows are garbage", min_value=0, max_value=10, value=0)
+    alt_enc = st.text_input("Encoding (leave blank to auto-detect)", value="")
+    # Provide instructions rather than attempting an automatic re-read here (complex with Drive/file paths)
+    st.info("If re-reading is needed, re-upload the CSV with the appropriate delimiter/encoding or correct your Drive file.")
+# Attempt to auto-detect price column
+common_price_names = [
+    'Sale Amount', 'Sale_Amount', 'sale_amount', 'SaleAmount',
+    'SalePrice', 'Sale Price', 'saleprice', 'price', 'Price',
+    'SALE AMOUNT', 'SALEPRICE'
+]
+# Exact-normalized matches
+found_exact = [c for c in df.columns if any(c.strip().lower().replace('_',' ').replace('-',' ') == name.lower().replace('_',' ').replace('-',' ') for name in common_price_names)]
+# Keyword matches
+found_kw = [c for c in df.columns if ('price' in c.lower() or 'amount' in c.lower() or 'sale' in c.lower())]
+
+found = found_exact or found_kw
+if found:
+    st.success(f"Detected possible price columns: {found}")
+    price_col = st.selectbox("Select confirmed price column", options=found, index=0)
+    if st.button("Use this column as price"):
+        # strip non-numeric characters (commas, $) then convert
+        df['Sale Amount'] = pd.to_numeric(df[price_col].astype(str).str.replace('[^0-9.-]','', regex=True), errors='coerce')
+        df['log_price'] = np.log1p(df['Sale Amount'])
+        if df['Sale Amount'].isnull().all():
+            st.error("Conversion produced only NaN values — check the column contains numeric values (remove $/commas).")
+        else:
+            st.success(f"Created 'Sale Amount' and 'log_price' from '{price_col}'.")
+            st.write(df[['Sale Amount','log_price']].head())
+else:
+    st.warning("No likely price column found automatically.")
+    pick = st.selectbox("Pick a column to use as price (or re-upload corrected CSV)", options=list(df.columns) + ["None"])
+    if pick != "None":
+        if st.button(f"Use '{pick}' as price column"):
+            df['Sale Amount'] = pd.to_numeric(df[pick].astype(str).str.replace('[^0-9.-]','', regex=True), errors='coerce')
+            df['log_price'] = np.log1p(df['Sale Amount'])
+            if df['Sale Amount'].isnull().all():
+                st.error("Conversion produced only NaN values — check the column contains numeric values (remove $/commas).")
+            else:
+                st.success(f"Created 'Sale Amount' and 'log_price' from '{pick}'.")
+                st.write(df[['Sale Amount','log_price']].head())
+
+# Final check: proceed only if log_price exists and not all NaN
+if 'log_price' not in df.columns or df['log_price'].isnull().all():
+    st.error("No price column present or conversion failed. Resolve the price column (see diagnostics above).")
+    st.stop()
+
+# ---------------------------
+# Continue normal processing (cleaning & filtering)
+# ---------------------------
 # cleaning & engineered columns (like your script)
 if 'Date Recorded' in df.columns:
     df['Date Recorded'] = pd.to_datetime(df['Date Recorded'], errors='coerce')
@@ -170,53 +216,41 @@ if 'Date Recorded' in df.columns:
     df['year'] = df['Date Recorded'].dt.year
     df['month'] = df['Date Recorded'].dt.month
 else:
-    # ensure year/month exist
     if 'year' not in df.columns:
         df['year'] = df.get('year', 2000)
     if 'month' not in df.columns:
         df['month'] = df.get('month', 1)
 
-# ensure log price exists
-if 'Sale Amount' in df.columns:
-    df['Sale Amount'] = pd.to_numeric(df['Sale Amount'], errors='coerce')
-    df['log_price'] = np.log1p(df['Sale Amount'])
-elif 'SalePrice' in df.columns:
-    df['log_price'] = np.log1p(pd.to_numeric(df['SalePrice'], errors='coerce'))
-else:
-    st.error("No price column found (expected 'Sale Amount' or 'SalePrice'). Add a column or upload corrected CSV.")
-    st.stop()
+# Ensure log_price numeric
+df['log_price'] = pd.to_numeric(df['log_price'], errors='coerce')
 
-# simple filters from your script
+# simple filters
 if 'Sales Ratio' in df.columns:
     df = df[df['Sales Ratio'].between(0.05, 5.0, inclusive="both")]
 if 'Non Use Code' in df.columns:
     df = df[df['Non Use Code'].isna()]
 if 'Sale Amount' in df.columns:
     df = df[df['Sale Amount'] >= 2000]
-# property types
 if 'Property Type' in df.columns:
     df = df[df['Property Type'].isin(['Residential', 'Single Family', 'Condo', 'Two Family', 'Three Family'])]
 
 st.markdown(f"**After lightweight cleaning:** {df.shape[0]:,} rows")
 
 # ---------------------------
-# Feature choice UI
+# Feature selection UI
 # ---------------------------
 st.markdown("---")
 st.subheader("Feature selection & temporal split")
 numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-# default features
 default_base = [c for c in ['Assessed Value', 'year', 'month'] if c in numeric_cols]
 features = st.multiselect("Numeric features (choose features to include)", options=numeric_cols, default=default_base)
 if 'log_price' in features:
     features = [f for f in features if f != 'log_price']
 
-# Town handling
 has_town = 'Town' in df.columns
 if has_town:
     st.write("Town column found and will be used for Town encoding (OHE or TargetEnc).")
 
-# temporal split
 min_year = int(df['year'].min())
 max_year = int(df['year'].max())
 train_until = st.slider("Train years ≤", min_value=min_year, max_value=max_year-1, value=min(2020, max_year-1))
@@ -230,39 +264,31 @@ if len(features) < 1:
     st.error("Select at least one numeric feature.")
     st.stop()
 
-# prepare encoding
 town_enc_map = None
 global_town_mean = None
 if use_target_enc and has_town:
-    # compute encoding mapping on train only
     town_enc_map, global_town_mean = smoothed_target_encoding(train_df['Town'], train_df['log_price'],
                                                              min_samples_leaf=target_enc_min_samples,
                                                              smoothing=target_enc_smoothing)
     st.sidebar.success("Target encoding mapping computed from training data")
 
-# prepare design matrices
 def prepare_design(df_local, features_local, town_enc_map=None, global_mean=None, one_hot=False):
     X_num = df_local[features_local].reset_index(drop=True)
-    # town handling
     if has_town:
         if one_hot:
             dummies = pd.get_dummies(df_local['Town'], prefix='town', drop_first=True).reset_index(drop=True)
             X = pd.concat([X_num, dummies], axis=1)
         else:
-            # target-encode or map smoothed means
             if town_enc_map is not None:
                 X_num['town_te'] = apply_target_encoding(df_local['Town'], town_enc_map, global_mean)
             else:
-                # fallback: unknown towns -> global mean of target
                 X_num['town_te'] = apply_target_encoding(df_local['Town'], {}, df_local['log_price'].mean())
             X = X_num
     else:
         X = X_num
-    # fillna numeric
     X = X.fillna(0)
     return X
 
-# choose encoding method: automatically choose target-enc if enabled, else one-hot
 one_hot_mode = not use_target_enc
 
 X_train_base = prepare_design(train_df, features, town_enc_map if use_target_enc else None,
@@ -278,7 +304,6 @@ y_test  = test_df['log_price'].values
 # ---------------------------
 st.markdown("---")
 st.subheader("Train models / Run experiments")
-
 col1, col2, col3 = st.columns([2,1,1])
 with col1:
     model_choice = st.selectbox("Model to train", options=["All", "Linear Regression", "Polynomial Regression", "KMeans + Per-Cluster Regression"])
@@ -305,7 +330,6 @@ def train_polynomial(train_df_local, test_df_local, Xtr_base, Xte_base, deg=3):
     return model, model.predict(Xte_poly)
 
 def kmeans_per_cluster_regression(train_df_local, test_df_local, Xtr_base, Xte_base, k=k_clusters):
-    # town-level stats (train)
     if 'Town' not in train_df_local.columns:
         raise ValueError("Town column required for KMeans approach.")
     town_stats = train_df_local.groupby('Town')['log_price'].agg(['mean','std','count']).fillna(0)
@@ -314,11 +338,9 @@ def kmeans_per_cluster_regression(train_df_local, test_df_local, Xtr_base, Xte_b
         raise ValueError("Not enough towns with >=30 records to run KMeans reliably.")
     scaler = StandardScaler()
     ts = scaler.fit_transform(town_stats[['mean','std']])
-    # find K safe
     k_use = min(k, max(2, town_stats.shape[0]))
     kmeans = KMeans(n_clusters=k_use, random_state=random_state, n_init=10)
     town_stats['cluster'] = kmeans.fit_predict(ts)
-    # merge cluster labels
     train_local = train_df_local.merge(town_stats[['cluster']], left_on='Town', right_index=True, how='left')
     test_local  = test_df_local.merge(town_stats[['cluster']], left_on='Town', right_index=True, how='left')
     train_local['cluster'] = train_local['cluster'].fillna(-1).astype(int)
@@ -339,7 +361,6 @@ def kmeans_per_cluster_regression(train_df_local, test_df_local, Xtr_base, Xte_b
         model.fit(Xc_tr, yc_tr)
         preds[mask_te.values] = model.predict(Xc_te)
         cluster_models[cl] = model
-    # fallback for any NaNs: global linear regression trained on all train rows
     nan_mask = np.isnan(preds)
     if nan_mask.any():
         glr = LinearRegression()
@@ -349,21 +370,18 @@ def kmeans_per_cluster_regression(train_df_local, test_df_local, Xtr_base, Xte_b
 
 if run_button:
     st.info("Running selected models — this may take a moment.")
-    # Linear
     if model_choice in ("Linear Regression", "All"):
         try:
             lr_model, pred_lr = train_linear(X_train_base.values, y_train, X_test_base.values)
             mae1, rmse1, r2_1 = eval_metrics(y_test, pred_lr)
             results['Linear Regression'] = {'model': lr_model, 'pred': pred_lr, 'mae': mae1, 'rmse': rmse1, 'r2': r2_1}
             st.success(f"Linear regression done — R²: {r2_1:.4f}")
-            # save model file
             fn = os.path.join(MODELS_DIR, "linear_reg.joblib")
             joblib.dump(lr_model, fn)
             st.sidebar.success(f"Linear model saved to {fn}")
         except Exception as e:
             st.error(f"Linear regression failed: {e}")
 
-    # Polynomial
     if model_choice in ("Polynomial Regression", "All"):
         try:
             poly_model, pred_poly = train_polynomial(train_df, test_df, X_train_base, X_test_base, deg=poly_degree)
@@ -376,14 +394,12 @@ if run_button:
         except Exception as e:
             st.error(f"Polynomial regression failed: {e}")
 
-    # KMeans + per-cluster
     if model_choice in ("KMeans + Per-Cluster Regression", "All"):
         try:
             preds_cluster, town_stats_df, cluster_models = kmeans_per_cluster_regression(train_df, test_df, X_train_base, X_test_base, k=k_clusters)
             mae3, rmse3, r2_3 = eval_metrics(y_test, preds_cluster)
             results['KMeans+PerCluster'] = {'model': cluster_models, 'pred': preds_cluster, 'mae': mae3, 'rmse': rmse3, 'r2': r2_3, 'town_stats': town_stats_df}
             st.success(f"KMeans+PerCluster done — R²: {r2_3:.4f}")
-            # save town_stats and cluster_models (joblib)
             fn = os.path.join(MODELS_DIR, "kmeans_percluster.joblib")
             joblib.dump({'town_stats': town_stats_df, 'cluster_models': cluster_models}, fn)
             st.sidebar.success(f"KMeans-related artifacts saved to {fn}")
@@ -402,7 +418,6 @@ if results:
     perf_df = pd.DataFrame(perf_rows).round(4)
     st.dataframe(perf_df, use_container_width=True)
 
-    # Plot Actual vs Predicted for each model
     st.markdown("### Actual vs Predicted (test set)")
     cols = st.columns(len(results))
     i = 0
@@ -414,14 +429,12 @@ if results:
         cols[i].plotly_chart(fig, use_container_width=True)
         i += 1
 
-    # sample predictions
     st.markdown("### Sample predictions (first 20 test rows)")
     sample = test_df.reset_index(drop=True).head(20).copy()
     for name, info in results.items():
         sample[f"pred_{name}"] = info['pred'][:len(sample)]
     st.dataframe(sample, use_container_width=True)
 
-    # download predictions CSV for each model
     st.markdown("### Download predictions")
     for name, info in results.items():
         preds_df = test_df.reset_index(drop=True).head(len(info['pred'])).copy()
@@ -430,7 +443,6 @@ if results:
         btn_label = f"Download predictions — {name}"
         st.download_button(btn_label, data=csv_bytes, file_name=f"predictions_{name.replace(' ','_')}.csv", mime="text/csv")
 
-    # download saved models from models/ folder if present
     st.markdown("### Download saved model artifacts")
     saved_files = os.listdir(MODELS_DIR)
     if saved_files:
@@ -442,7 +454,6 @@ if results:
     else:
         st.write("No saved model artifacts found yet.")
 
-    # KMeans town cluster bar
     if 'KMeans+PerCluster' in results:
         ts = results['KMeans+PerCluster'].get('town_stats')
         if ts is not None and not ts.empty:
@@ -454,7 +465,6 @@ if results:
 # ---------------------------
 st.markdown("---")
 st.subheader("Extra visualizations")
-# yearly trend
 try:
     yearly = df.groupby('year')['log_price'].mean().dropna()
     fig_year = px.line(x=yearly.index, y=np.expm1(yearly.values), labels={'x':'Year', 'y':'Avg Sale Price'}, title='Average Sale Price Over Time (expm1)')
@@ -485,7 +495,7 @@ if st.checkbox("Show KMeans elbow (train towns)"):
         st.write("Town column missing; elbow unavailable.")
 
 # ---------------------------
-# Live prediction UI (use trained models saved in memory or load saved artifacts)
+# Live prediction UI
 # ---------------------------
 st.markdown("---")
 st.subheader("Live prediction — try the models interactively")
@@ -496,7 +506,6 @@ with st.form("live_pred_form"):
     inputs = {}
     for f in features:
         inputs[f] = colA.number_input(f"{f}", value=float(train_df[f].median()) if f in train_df.columns else 0.0)
-    # town input
     town_input = colB.text_input("Town (exact name from dataset)", value=str(train_df['Town'].iloc[0]) if 'Town' in train_df.columns else "")
     model_source = st.selectbox("Which model to use for live predict?", options=["Linear Regression", "Polynomial Regression", "KMeans + Per-Cluster Regression", "Upload model file"])
     uploaded_model_file = None
@@ -505,7 +514,6 @@ with st.form("live_pred_form"):
     submitted = st.form_submit_button("Predict now")
 
 if submitted:
-    # prepare single-row X
     x_df = pd.DataFrame([inputs])
     if has_town:
         x_df['Town'] = town_input
@@ -522,27 +530,20 @@ if submitted:
     try:
         if model_source == "Upload model file" and uploaded_model_file is not None:
             uploaded_bytes = uploaded_model_file.read()
-            # try loading joblib from bytes
             model_tmp = joblib.load(io.BytesIO(uploaded_bytes))
-            # call predict directly; special handling for polynomial: user must upload a poly model that accepts transformed input
             if hasattr(model_tmp, "predict"):
                 pred = model_tmp.predict(X_live)
                 predict_val = pred[0]
                 model_used = "Uploaded model"
         else:
-            # use results dict if model was trained
             if model_source in results:
-                # map to model object: for KMeans we may have multiple cluster models (dictionary)
                 info = results[model_source]
                 mod = info.get('model')
                 if model_source == "KMeans + Per-Cluster Regression":
-                    # try to replicate cluster assignment: if town exists in town_stats
                     town_stats_art = info.get('town_stats')
                     if town_stats_art is None:
-                        # fallback: can't use KMeans
                         st.warning("KMeans artifacts not available in memory — run KMeans model first.")
                     else:
-                        # determine cluster for provided town (if present), else fallback to global
                         town_row = town_stats_art[town_stats_art['Town'] == town_input]
                         if not town_row.empty:
                             cl = int(town_row['cluster'].iloc[0])
@@ -551,44 +552,24 @@ if submitted:
                                 predict_val = cl_model.predict(X_live)[0]
                                 model_used = f"KMeans cluster {cl} model"
                             else:
-                                # fallback to global linear (train one)
                                 gl = LinearRegression().fit(X_train_base.values, y_train)
                                 predict_val = gl.predict(X_live)[0]
                                 model_used = "KMeans fallback -> global linear"
                         else:
-                            # fallback
                             gl = LinearRegression().fit(X_train_base.values, y_train)
                             predict_val = gl.predict(X_live)[0]
                             model_used = "KMeans fallback -> global linear"
                 else:
-                    # Linear / Polynomial stored as sklearn linear models
                     model_obj = info.get('model')
-                    # polynomial model expects transformed input; we trained using X+poly(year)
-                    if model_source.startswith("Polynomial"):
-                        # create year poly and concat
-                        poly = PolynomialFeatures(degree=poly_degree, include_bias=False)
-                        # transform year from the x_df; ensure 'year' exists
-                        year_arr = x_df[['year']].values
-                        year_poly = poly.fit_transform(np.array([[int(x_df['year'].iloc[0])]]))  # small hack: poly fit_transform on single value
-                        # but safer: create polynomial manually using same degree
-                        # recreate full Xpoly: X_live columns (numeric + town encoding) + year_poly
-                        # For simplicity attempt direct prediction — if it fails ask user to upload poly model that handles features
-                        try:
-                            predict_val = model_obj.predict(X_live)[0]
-                        except Exception:
-                            # fallback: global linear
-                            predict_val = model_obj.predict(X_live)[0]
-                        model_used = model_source
-                    else:
+                    try:
                         predict_val = model_obj.predict(X_live)[0]
                         model_used = model_source
-            else:
-                st.warning("Selected model not trained in this session. Upload a joblib model or train first.")
+                    except Exception:
+                        st.warning("Direct predict failed — ensure the model was trained with the same feature ordering/encoding.")
     except Exception as e:
         st.error(f"Live prediction failed: {e}")
 
     if predict_val is not None:
-        # inverse log: price = exp(pred) - 1
         price_pred = np.expm1(predict_val)
         st.success(f"Predicted log_price = {predict_val:.4f} → Predicted Sale Amount ≈ ${price_pred:,.2f} (model: {model_used})")
     else:
@@ -600,11 +581,10 @@ if submitted:
 st.markdown("---")
 st.markdown("### Next steps & extras you can enable")
 st.markdown("""
-- Add target encoding improvements (K-fold target encoding to avoid leakage), robust scaling pipelines, and model persistence using `sklearn.pipeline`.  
-- Add a tiny Flask/FastAPI microservice that loads the saved joblib model for live HTTP predictions (we can provide the code).  
-- Port the UI to a polished dark theme with custom images (I can produce an HTML/CSS + assets pack).  
-- Add CI/CD: auto-run training on new data and push artifacts to an S3 bucket or GCP bucket.
+- Add K-fold out-of-fold target encoding to avoid leakage.  
+- Wrap polynomial transform into a pipeline and save that pipeline for safe live predictions.  
+- Add an HTTP endpoint (FastAPI) to serve saved joblib models.  
+- Polish UI with custom assets to match your screenshots.
 """)
 
-st.info("Done — this app contains: Drive loader, fallback uploader, feature selection, OHE/target-encoding option, Linear, Polynomial, KMeans+per-cluster regressions, model save/download, predictions CSV export, and a Live Prediction panel. Ask me to: (A) add an HTTP prediction endpoint (Flask/FastAPI) or (B) craft a slick dark CSS/PNG hero to match your screenshots — I'll provide the exact code next.")
-
+st.info("Done — diagnostics integrated. If your CSV still fails to produce a price column, open the CSV in a text editor and tell me the exact header names (or paste df.columns output here) and I'll auto-map it for you.")
