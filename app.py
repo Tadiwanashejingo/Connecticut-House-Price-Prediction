@@ -21,7 +21,7 @@ st.set_page_config(page_title="Connecticut House Price Predictor AI", layout="wi
 # =========================
 # BACKGROUND IMAGE (your exact picture)
 # =========================
-BACKGROUND_IMAGE = "C:\Users\chabx\Downloads\PREDICTIVE ANALYSIS\REAL ESTATE PREDICTION PROJECT\background.png"
+BACKGROUND_IMAGE = r"C:\Users\chabx\Downloads\PREDICTIVE ANALYSIS\REAL ESTATE PREDICTION PROJECT\background.png"
 
 st.markdown(f"""
 <style>
