@@ -172,9 +172,7 @@ fig = go.Figure(data=[go.Table(
         fill_color='#001d3d',
         font=dict(color='white', size=16),
         height=55,
-        align='center'
-    )])
-)
+        align='center'))])
 fig.update_layout(height=320, margin=dict(t=20,b=20))
 st.plotly_chart(fig, use_container_width=True)
 st.markdown("</div>", unsafe_allow_html=True)
