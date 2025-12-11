@@ -43,6 +43,3 @@ Source: data.ct.gov
 Built with ❤️ using only scikit-learn, pandas, matplotlib & Streamlit  
 **100% reproducible • No external APIs • Runs on any laptop**
 
-Deployed live and ready to impress professors, recruiters, and classmates.
-
-Your A+ project is complete.
