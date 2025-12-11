@@ -9,7 +9,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
 import os
 
-DATA_PATH = r"C:\Users\chabx\Downloads\PREDICTIVE ANALYSIS\REAL ESTATE PREDICTION PROJECT\Real_Estate_Sales_2001-2023_GL.csv"
+DATA_PATH = r"C:\Users\chabx\Downloads\real_estate_750k_dataset.csv"
 
 # Page config & gorgeous dark theme
 st.set_page_config(page_title="CT House Price Predictor", page_icon="🏠", layout="wide")
