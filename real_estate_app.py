@@ -32,7 +32,7 @@ st.markdown("""
 df_raw = pd.read_csv("https://drive.google.com/uc?id=1tgbAto2or80v8o6fqKNkWf2rfitaAKIl&export=download")
 
 # Print column names once so we can see exactly how they appear
-st.write("Columns: df_raw.columns.tolist())
+st.write("Columns:", df_raw.columns.tolist())
 
 # Clean column names (removes extra spaces, makes them consistent)
 df_raw.columns = df_raw.columns.str.strip()
