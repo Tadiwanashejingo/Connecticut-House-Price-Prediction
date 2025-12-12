@@ -28,10 +28,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# LOAD & CLEAN DATA 
+# Load from your full dataset from Google Drive
 df_raw = pd.read_csv("https://drive.google.com/uc?id=1tgbAto2or80v8o6fqKNkWf2rfitaAKIl&export=download")
 
-# Correct column names (with space!)
+# Print column names once so we can see exactly how they appear
+st.write("Columns: df_raw.columns.tolist())
+
+# Clean column names (removes extra spaces, makes them consistent)
+df_raw.columns = df_raw.columns.str.strip()
+
+# Now use the EXACT correct column names (with space!)
 df = df_raw[df_raw['Property Type'].str.contains('Residential', na=False, case=False)].copy()
 df = df.dropna(subset=['Sale Amount', 'Assessed Value', 'List Year', 'Town', 'Residential Type'])
 df = df[(df['Sale Amount'].between(10000, 3000000)) & (df['Assessed Value'] > 1000)]
