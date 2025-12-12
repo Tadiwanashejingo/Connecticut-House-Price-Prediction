@@ -10,6 +10,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.neighbors import KNeighborsRegressor
 import time
+import io
 
 # ------------------ STYLE ------------------
 st.set_page_config(page_title="CT Real Estate ML", page_icon="house", layout="wide")
@@ -28,15 +29,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Load from your full dataset from Google Drive
-df_raw = pd.read_csv("https://drive.google.com/uc?id=1tgbAto2or80v8o6fqKNkWf2rfitaAKIl&export=download")
 
-# Print column names once so we can see exactly how they appear
-st.write("Columns:", df_raw.columns.tolist())
+@st.cache_data(show_spinner="Downloading full 125MB dataset from Google Drive... (~15s first time)")
+def load_full_dataset():
+    # This URL bypasses the virus warning and forces direct download
+    file_id = "1tgbAto2or80v8o6fqKNkWf2rfitaAKIl"
+    url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
+    
+    # Download and read in one go
+    response = pd.read_csv(url)
+    return response
 
-# Clean column names (removes extra spaces, makes them consistent)
+# Load data
+df_raw = load_full_dataset()
+
+# Show exact column names so we know what exists
+st.write("Columns found:", df_raw.columns.tolist())
+
+# Fix column names (remove extra spaces)
 df_raw.columns = df_raw.columns.str.strip()
-
 # Now use the EXACT correct column names (with space!)
 df = df_raw[df_raw['Property Type'].str.contains('Residential', na=False, case=False)].copy()
 df = df.dropna(subset=['Sale Amount', 'Assessed Value', 'List Year', 'Town', 'Residential Type'])
