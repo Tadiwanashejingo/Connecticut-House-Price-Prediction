@@ -32,8 +32,8 @@ st.markdown("""
 df_raw = pd.read_csv("https://drive.google.com/uc?id=1tgbAto2or80v8o6fqKNkWf2rfitaAKIl&export=download")
 
 # Fix the filtering line that was causing error
-df = df_raw[df_raw['Property Type'].str.contains('Residential', na=False, case=False)].copy()
-df = df.dropna(subset=['Sale Amount', 'Assessed Value', 'List Year', 'Town', 'Residential Type'])
+df = df_raw[df_raw['PropertyType'].str.contains('Residential', na=False, case=False)].copy()
+df = df.dropna(subset=['Sale Amount', 'Assessed Value', 'List Year', 'Town', 'ResidentialType'])
 df = df[(df['Sale Amount'].between(10000, 3000000)) & (df['Assessed Value'] > 1000)]
 
 # ------------------ TRAIN MODELS ------------------
