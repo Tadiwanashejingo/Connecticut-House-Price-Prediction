@@ -29,7 +29,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ------------------ LOAD & CLEAN DATA ------------------
-df_raw = pd.read_csv(r"C:\Users\chabx\Downloads\PREDICTIVE ANALYSIS\REAL ESTATE PREDICTION PROJECT\Real_Estate_Sales_2001-2023_GL.csv")
+df_raw = pd.read_csv("https://drive.google.com/uc?id=1tgbAto2or80v8o6fqKNkWf2rfitaAKIl&export=download")
 
 # Fix the filtering line that was causing error
 df = df_raw[df_raw['Property Type'].str.contains('Residential', na=False, case=False)].copy()
